@@ -12,7 +12,7 @@ if not st.session_state.auth:
     st.title("🔒 审计系统登录")
     pwd = st.text_input("请输入访问密码", type="password")
     if st.button("进入系统"):
-        if pwd == "0224":  # 这里是你预设的密码
+        if pwd == "0224":  # 这里是你的预设密码
             st.session_state.auth = True
             st.rerun()
         else:
@@ -24,7 +24,7 @@ def run_audit(df):
     # 统一名目格式
     df.columns = df.columns.str.strip()
     
-    # 定义名目与聚合规则 (条件 5: 同名自动汇总)
+    # 定义名目与聚合规则
     agg_rules = {
         '个人实际销量': 'sum',
         '投注单数': 'sum',
@@ -56,25 +56,28 @@ def run_audit(df):
         return " | ".join(m) if m else None
 
     grouped['异常标记'] = grouped.apply(get_labels, axis=1)
-    # 只返回有问题的用户
     return grouped[grouped['异常标记'].notna()]
 
 # 3. 网页交互界面
 st.title("📊 异常用户自动筛查系统")
-st.info("说明：系统会自动将同一用户名的销量、单数、盈亏加总，并进行严谨审计。")
+st.info("说明：系统支持 .xlsx 与 .xls 格式，会自动汇总同名用户并进行审计。")
 
-uploaded_file = st.file_uploader("请上传 Excel 档案 (.xlsx)", type=["xlsx"])
+# 【修改点 1】：允许上传 xls 和 xlsx
+uploaded_file = st.file_uploader("请上传 Excel 档案 (.xlsx 或 .xls)", type=["xlsx", "xls"])
 
 if uploaded_file:
     try:
-        data = pd.read_excel(uploaded_file)
+        # 【修改点 2】：根据文件后缀自动选择读取方式
+        if uploaded_file.name.endswith('.xls'):
+            data = pd.read_excel(uploaded_file, engine='xlrd')
+        else:
+            data = pd.read_excel(uploaded_file)
+            
         res = run_audit(data)
         
         if not res.empty:
             st.warning(f"分析完成：发现 {len(res)} 个异常账户")
-            # 完整展示结果
             st.dataframe(res, use_container_width=True)
-            # 导出功能
             csv = res.to_csv(index=False).encode('utf-8-sig')
             st.download_button("📥 导出审计结果 (CSV)", csv, "audit_report.csv", "text/csv")
         else:
