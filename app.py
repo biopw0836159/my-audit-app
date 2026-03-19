@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # 严谨模式：页面配置
-st.set_page_config(page_title="严谨审计系统", layout="wide")
+st.set_page_config(page_title="阿贤", layout="wide")
 
 # 1. 设置多人访问密码
 if "auth" not in st.session_state:
@@ -12,7 +12,7 @@ if not st.session_state.auth:
     st.title("🔒 审计系统登录")
     pwd = st.text_input("请输入访问密码", type="password")
     if st.button("进入系统"):
-        if pwd == "888":  # 这里是你预设的密码
+        if pwd == "0224":  # 这里是你预设的密码
             st.session_state.auth = True
             st.rerun()
         else:
