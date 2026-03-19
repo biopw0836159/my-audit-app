@@ -20,48 +20,62 @@ if not st.session_state.auth:
             st.error("密码错误")
     st.stop()
 
-# 3. 核心审计逻辑
-def run_audit(df):
-    # 彻底清理：去掉全空行，清理表头空格
-    df = df.dropna(how='all').reset_index(drop=True)
-    df.columns = df.columns.astype(str).str.strip()
-    
-    # --- 自动兼容列名逻辑 ---
-    # 如果你的 Excel 列名不叫这些，请在这里添加映射
-    rename_dict = {
-        '个人销量': '个人实际销量',
-        '实际销量': '个人实际销量',
-        '盈亏': '个人游戏盈亏',
-        '会员账号': '用户名',
-        '账号': '用户名'
-    }
-    df = df.rename(columns=rename_dict)
-    
-    # 检查核心列
-    required = ['用户名', '个人实际销量', '投注单数', '个人游戏盈亏', 'RTP']
-    missing = [c for c in required if c not in df.columns]
-    
-    if missing:
-        st.error(f"❌ 识别失败：表格中缺少列 {', '.join(missing)}")
-        st.write("💡 我在你的 Excel 里看到的列名有：", list(df.columns))
-        return pd.DataFrame(), False # 返回失败信号
+# 3. 核心工具：智能列名匹配
+def find_col(columns, keywords):
+    for col in columns:
+        for key in keywords:
+            if key in str(col):
+                return col
+    return None
 
-    # 强制转换数值
-    for col in ['个人实际销量', '投注单数', '个人游戏盈亏', 'RTP']:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+# 4. 核心审计逻辑
+def run_audit(df):
+    # 清理数据：删掉全空行，清理表头
+    df = df.dropna(how='all').reset_index(drop=True)
+    df.columns = [str(c).strip() for c in df.columns]
+    
+    # 智能定位关键列
+    col_user = find_col(df.columns, ['用户名', '账号', '会员', 'User'])
+    col_sales = find_col(df.columns, ['个人实际销量', '实际销量', '个人销量', '销量', 'Sales'])
+    col_count = find_col(df.columns, ['投注单数', '单数', 'Count'])
+    col_rtp = find_col(df.columns, ['RTP', '返还率'])
+    col_profit = find_col(df.columns, ['个人游戏盈亏', '盈亏', 'Profit'])
+
+    # 严谨检查
+    mapping = {
+        "用户名": col_user,
+        "个人实际销量": col_sales,
+        "投注单数": col_count,
+        "RTP": col_rtp,
+        "个人游戏盈亏": col_profit
+    }
+    
+    missing = [k for k, v in mapping.items() if v is None]
+    if missing:
+        st.error(f"❌ 匹配失败！Excel 中找不到这些信息：{', '.join(missing)}")
+        st.write("🔍 我在表格里看到的列名有：", list(df.columns))
+        return pd.DataFrame(), False
+
+    # 准备标准化的数据
+    audit_df = pd.DataFrame()
+    audit_df['用户名'] = df[col_user].astype(str)
+    
+    # 强制数值化，解决 "arg must be a list" 报错
+    for target, source in [('销量', col_sales), ('单数', col_count), ('盈亏', col_profit), ('RTP', col_rtp)]:
+        audit_df[target] = pd.to_numeric(df[source], errors='coerce').fillna(0)
 
     # 汇总计算
-    grouped = df.groupby('用户名').agg({
-        '个人实际销量': 'sum',
-        '投注单数': 'sum',
-        '个人游戏盈亏': 'sum',
+    grouped = audit_df.groupby('用户名').agg({
+        '销量': 'sum',
+        '单数': 'sum',
+        '盈亏': 'sum',
         'RTP': 'mean'
     }).reset_index()
 
     # 审计标记
     def get_labels(row):
         m = []
-        v, c, r, p = row['个人实际销量'], row['投注单数'], row['RTP'], row['个人游戏盈亏']
+        v, c, r, p = row['销量'], row['单数'], row['RTP'], row['盈亏']
         if 1000 <= v <= 2000 and c < 12: m.append("疑似刷人数")
         if v > 500000 and 0.995 <= r <= 1: m.append("疑似刷量")
         if p > 100000: m.append("盈利大会员")
@@ -71,7 +85,7 @@ def run_audit(df):
     grouped['异常标记'] = grouped.apply(get_labels, axis=1)
     return grouped, True
 
-# 4. 界面与暴力读取
+# 5. 界面
 st.title("📊 异常用户自动筛查系统")
 uploaded_file = st.file_uploader("请上传 Excel (.xlsx 或 .xls)", type=["xlsx", "xls"])
 
@@ -80,42 +94,35 @@ if uploaded_file:
         file_bytes = uploaded_file.read()
         data = None
         
-        # 依次尝试各种读取引擎
-        try:
-            data = pd.read_excel(io.BytesIO(file_bytes))
-        except:
+        # 依次尝试读取方式
+        engines = [None, 'xlrd', 'html5lib']
+        for engine in engines:
             try:
-                data = pd.read_excel(io.BytesIO(file_bytes), engine='xlrd')
-            except:
-                try:
+                if engine == 'html5lib':
                     tables = pd.read_html(io.BytesIO(file_bytes), flavor='html5lib')
                     data = tables[0]
-                except:
-                    st.error("❌ 还是读不了这个文件。请确保它不是加密文件。")
+                else:
+                    data = pd.read_excel(io.BytesIO(file_bytes), engine=engine)
+                if data is not None: break
+            except:
+                continue
 
         if data is not None:
-            # --- 诊断环节：先看看原始数据读得对不对 ---
-            with st.expander("🔍 点击查看原始数据预览（诊断用）"):
-                st.write("前 5 行数据：")
-                st.dataframe(data.head())
-                st.write("所有列名：", list(data.columns))
-
-            # 运行分析
-            res_all, success = run_audit(data)
-            
-            if success:
-                # 只过滤出有问题的
-                res_flagged = res_all[res_all['异常标记'].notna()]
-                
-                if not res_flagged.empty:
-                    st.warning(f"✅ 发现 {len(res_flagged)} 个异常账户")
-                    st.dataframe(res_flagged, use_container_width=True)
-                    csv = res_flagged.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button("📥 导出审计结果", csv, "report.csv", "text/csv")
-                else:
-                    st.success("✅ 扫描完毕，原始数据读取正常，但【没有用户】符合异常条件。")
-                    st.write("你可以检查一下汇总后的数据：")
-                    st.dataframe(res_all.head(10)) # 显示前10个用户看看
+            # 自动跳过文件顶部的废话标题行
+            if data.shape[1] < 2: # 只有一列肯定读错了
+                st.error("读取到的列数太少，请检查文件格式。")
+            else:
+                res_all, success = run_audit(data)
+                if success:
+                    res_flagged = res_all[res_all['异常标记'].notna()]
+                    if not res_flagged.empty:
+                        st.warning(f"✅ 发现 {len(res_flagged)} 个异常账户")
+                        st.dataframe(res_flagged, use_container_width=True)
+                        st.download_button("📥 导出审计结果", res_flagged.to_csv(index=False).encode('utf-8-sig'), "report.csv")
+                    else:
+                        st.success("✅ 扫描完毕，未发现符合条件的异常用户。")
+                        with st.expander("查看所有用户汇总数据"):
+                            st.dataframe(res_all)
                 
     except Exception as e:
-        st.error(f"解析过程中发生错误：{e}")
+        st.error(f"致命错误：{e}")
