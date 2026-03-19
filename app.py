@@ -5,7 +5,7 @@ import io
 # 1. 页面配置
 st.set_page_config(page_title="抓鬼", layout="wide")
 
-# 2. 登录逻辑 (888 密码)
+# 2. 登录逻辑 (0224 密码)
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
@@ -13,7 +13,7 @@ if not st.session_state.auth:
     st.title("🔒 审计系统登录")
     pwd = st.text_input("请输入访问密码", type="password")
     if st.button("进入系统"):
-        if pwd == "888":
+        if pwd == "0224":
             st.session_state.auth = True
             st.rerun()
         else:
