@@ -1,19 +1,10 @@
 import streamlit as st
 import pandas as pd
-import io
 
 # 1. 页面配置
 st.set_page_config(page_title="抓鬼用户", layout="wide")
 
-# 2. 自定义 CSS 样式：处理已读后的灰色和删除线
-st.markdown("""
-    <style>
-    .processed-text { color: #aaaaaa; text-decoration: line-through; }
-    .stCheckbox { margin-bottom: 0px; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# 3. 登录逻辑
+# 2. 登录逻辑
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
@@ -28,10 +19,9 @@ if not st.session_state.auth:
             st.error("密码错误")
     st.stop()
 
-# 4. 核心审计函数 (严谨保留原始加权算法)
+# 3. 核心审计函数 (严谨原始逻辑)
 def run_audit(df):
     df.columns = [str(c).strip().replace('\n', '').replace('\r', '') for c in df.columns]
-    
     name_map = {
         '个人实际销量': ['个人实际销量', '投注', '个人销量', '实际销量', '销量'],
         '用户名': ['用户名', '会员账号', '账号', '会员', '用户'],
@@ -39,7 +29,6 @@ def run_audit(df):
         '个人游戏盈亏': ['个人游戏盈亏', '盈亏', '游戏盈亏', '盈亏金额'],
         'RTP': ['RTP', '返还率', 'rtp', '返奖率']
     }
-    
     actual_cols = {}
     for standard_name, aliases in name_map.items():
         for alias in aliases:
@@ -48,10 +37,8 @@ def run_audit(df):
                 break
     
     required = ['用户名', '个人实际销量', '投注单数', '个人游戏盈亏', 'RTP']
-    missing = [r for r in required if r not in actual_cols]
-    
-    if missing:
-        st.error(f"❌ 识别失败：Excel 缺少必要列：{', '.join(missing)}")
+    if not all(r in actual_cols for r in required):
+        st.error("❌ Excel 列名识别失败")
         return None
 
     clean_df = pd.DataFrame()
@@ -59,20 +46,11 @@ def run_audit(df):
     for col in ['个人实际销量', '投注单数', '个人游戏盈亏', 'RTP']:
         clean_df[col] = pd.to_numeric(df[actual_cols[col]], errors='coerce').fillna(0)
 
-    # 核心加权算法
     clean_df['返还额'] = clean_df['个人实际销量'] * clean_df['RTP']
-
     grouped = clean_df.groupby('用户名').agg({
-        '个人实际销量': 'sum',
-        '投注单数': 'sum',
-        '个人游戏盈亏': 'sum',
-        '返还额': 'sum'
+        '个人实际销量': 'sum', '投注单数': 'sum', '个人游戏盈亏': 'sum', '返还额': 'sum'
     }).reset_index()
-
-    # 计算最终加权 RTP (原始小数显示)
-    grouped['RTP'] = grouped.apply(
-        lambda x: x['返还额'] / x['个人实际销量'] if x['个人实际销量'] > 0 else 0, axis=1
-    )
+    grouped['RTP'] = grouped.apply(lambda x: x['返还额'] / x['个人实际销量'] if x['个人实际销量'] > 0 else 0, axis=1)
 
     def get_labels(row):
         m = []
@@ -83,51 +61,61 @@ def run_audit(df):
         if v > 2000 and c < 10: m.append("疑似对刷")
         return " | ".join(m) if m else None
 
-    grouped['异常标记'] = grouped.apply(get_labels, axis=1)
-    
-    flagged = grouped[grouped['异常标记'].notna()].copy()
-    return flagged[['用户名', '异常标记', '个人实际销量', '投注单数', '个人游戏盈亏', 'RTP']]
+    grouped['原因'] = grouped.apply(get_labels, axis=1)
+    return grouped[grouped['原因'].notna()]
 
-# 5. 界面显示层
+# 4. 界面
 st.title("📊 抓到嘿咕 (反色标记版)")
 
-uploaded_file = st.file_uploader("上传 Excel (.xlsx)", type=["xlsx"])
+file = st.file_uploader("上传 Excel", type=["xlsx"])
 
-if uploaded_file:
-    # 状态管理：存储分析结果和已读用户
-    if "ghost_data" not in st.session_state or st.button("🔄 重新扫描文件"):
-        try:
-            raw_data = pd.read_excel(uploaded_file)
-            st.session_state.ghost_data = run_audit(raw_data)
-            st.session_state.ghost_read = set()
-        except Exception as e:
-            st.error(f"解析错误：{e}")
+if file:
+    # 强制点击按钮才刷新数据
+    if "ghost_res" not in st.session_state or st.button("重新跑数据"):
+        raw = pd.read_excel(file)
+        st.session_state.ghost_res = run_audit(raw)
+        st.session_state.ghost_read = set()
 
-    # --- 修复的关键位置：正确调用 session_state ---
-    res = st.session_state.get("ghost_data")
+    res = st.session_state.get("ghost_res")
 
     if res is not None and not res.empty:
-        done_num = len(st.session_state.ghost_read)
-        st.warning(f"🎯 发现 {len(res)} 个异常账户 | 已核查: {done_num}")
-
-        st.write("---")
-        h = st.columns([1, 2, 4, 2, 2, 2, 2])
-        h[0].write("**确认**")
-        h[1].write("**用户名**")
-        h[2].write("**原因**")
-        h[3].write("**销量**")
-        h[4].write("**单数**")
-        h[5].write("**盈亏**")
-        h[6].write("**RTP**")
+        st.warning(f"🎯 发现 {len(res)} 个异常")
+        
+        # 建立表头
+        cols = st.columns([1, 2, 3, 2, 2, 2, 2])
+        cols[0].write("确认")
+        cols[1].write("用户名")
+        cols[2].write("原因")
+        cols[3].write("销量")
+        cols[4].write("单数")
+        cols[5].write("盈亏")
+        cols[6].write("RTP")
 
         for i, row in res.iterrows():
-            uname = row['用户名']
-            is_read = uname in st.session_state.ghost_read
+            u = row['用户名']
+            is_read = u in st.session_state.ghost_read
             
-            with st.container():
-                cols = st.columns([1, 2, 4, 2, 2, 2, 2])
-                
-                # 勾选逻辑
-                check_val = cols[0].checkbox(" ", key=f"gk_{uname}", value=is_read)
-                if check_val:
-                    st.session_state.ghost_read.add(uname)
+            c = st.columns([1, 2, 3, 2, 2, 2, 2])
+            
+            # 勾选框
+            if c[0].checkbox(" ", key=f"k_{u}", value=is_read):
+                st.session_state.ghost_read.add(u)
+                is_read = True
+            else:
+                st.session_state.ghost_read.discard(u)
+                is_read = False
+
+            # 显示内容 (如果勾选了就变淡)
+            color = "#ccc" if is_read else "#000"
+            text_style = f"style='color:{color};'"
+            
+            c[1].markdown(f"<p {text_style}>{u}</p>", unsafe_allow_html=True)
+            c[2].markdown(f"<p {text_style}>{row['原因']}</p>", unsafe_allow_html=True)
+            c[3].markdown(f"<p {text_style}>{row['个人实际销量']}</p>", unsafe_allow_html=True)
+            c[4].markdown(f"<p {text_style}>{row['投注单数']}</p>", unsafe_allow_html=True)
+            c[5].markdown(f"<p {text_style}>{row['个人游戏盈亏']}</p>", unsafe_allow_html=True)
+            c[6].markdown(f"<p {text_style}>{row['RTP']}</p>", unsafe_allow_html=True)
+
+        st.write("---")
+        csv = res.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("导出 CSV", csv, "report.csv")
