@@ -19,7 +19,7 @@ if not st.session_state.auth:
             st.error("密码错误")
     st.stop()
 
-# 3. 核心审计逻辑 (保持严谨原始算法)
+# 3. 核心审计函数
 def run_audit(df):
     try:
         df.columns = [str(c).strip().replace('\n', '').replace('\r', '') for c in df.columns]
@@ -39,7 +39,7 @@ def run_audit(df):
         
         required = ['用户名', '个人实际销量', '投注单数', '个人游戏盈亏', 'RTP']
         if not all(r in actual_cols for r in required):
-            st.error(f"❌ 列名匹配失败。")
+            st.error(f"❌ 列名匹配失败，请检查 Excel 表头。")
             return None
 
         clean_df = pd.DataFrame()
@@ -69,53 +69,47 @@ def run_audit(df):
         return None
 
 # 4. 界面显示层
-st.title("📊 抓到嘿咕 (排序增强版)")
+st.title("📊 抓")
 
 file = st.file_uploader("📂 上传 Excel 文件", type=["xlsx"])
 
 if file:
-    # 扫描与存储
     if "ghost_res" not in st.session_state or st.button("🔄 重新扫描文件"):
-        raw = pd.read_excel(file)
-        result = run_audit(raw)
-        if result is not None:
-            st.session_state.ghost_res = result
-            st.session_state.ghost_read = set()
+        try:
+            raw = pd.read_excel(file)
+            result = run_audit(raw)
+            if result is not None:
+                st.session_state.ghost_res = result
+                st.session_state.ghost_read = set()
+        except Exception as e:
+            st.error(f"加载文件失败：{e}")
 
     res = st.session_state.get("ghost_res")
 
     if res is not None and not res.empty:
-        # --- 新增排序功能区 ---
+        # 排序功能
         st.write("---")
         sort_col, sort_order = st.columns([2, 1])
-        sort_by = sort_col.selectbox("选择排序字段", ["默认 (按账号)", "个人实际销量", "个人游戏盈亏", "RTP", "投注单数"])
+        sort_by = sort_col.selectbox("选择排序字段", ["默认 (账号)", "个人实际销量", "个人游戏盈亏", "RTP", "投注单数"])
         order = sort_order.selectbox("排序方式", ["从大到小", "从小到大"])
         
-        # 执行排序逻辑
-        mapping = {"默认 (按账号)": "用户名", "个人实际销量": "个人实际销量", "个人游戏盈亏": "个人游戏盈亏", "RTP": "RTP", "投注单数": "投注单数"}
-        sort_target = mapping[sort_by]
-        is_asc = (order == "从小到大")
-        res = res.sort_values(by=sort_target, ascending=is_asc)
-        # ----------------------
+        mapping = {"默认 (账号)": "用户名", "个人实际销量": "个人实际销量", "个人游戏盈亏": "个人游戏盈亏", "RTP": "RTP", "投注单数": "投注单数"}
+        res = res.sort_values(by=mapping[sort_by], ascending=(order == "从小到大"))
 
         done_num = len(st.session_state.ghost_read)
         st.warning(f"🎯 发现 {len(res)} 个异常账号 | 已核查: {done_num}")
         
-        # 表头
         st.write("---")
         h_cols = st.columns([1, 2, 3, 2, 1, 2, 2])
         headers = ["确认", "用户名", "原因", "销量", "单数", "盈亏", "RTP"]
         for col, h in zip(h_cols, headers): col.write(f"**{h}**")
 
-        # 数据展示 (显示时格式化为 3 位小数)
         for i, row in res.iterrows():
             u = row['用户名']
             is_read = u in st.session_state.ghost_read
             
             with st.container():
                 r_cols = st.columns([1, 2, 3, 2, 1, 2, 2])
-                
-                # 勾选框
                 if r_cols[0].checkbox(" ", key=f"k_{u}_{i}", value=is_read):
                     st.session_state.ghost_read.add(u)
                     is_read = True
@@ -123,12 +117,10 @@ if file:
                     st.session_state.ghost_read.discard(u)
                     is_read = False
 
-                # 变灰变淡样式
                 color = "#aaaaaa" if is_read else "#000000"
                 decoration = "line-through" if is_read else "none"
                 style = f"style='color:{color}; text-decoration:{decoration}; margin:0; padding:0;'"
                 
-                # 内容渲染 (显示为 3 位小数)
                 r_cols[1].markdown(f"<p {style}>{u}</p>", unsafe_allow_html=True)
                 r_cols[2].markdown(f"<p {style}>{row['原因']}</p>", unsafe_allow_html=True)
                 r_cols[3].markdown(f"<p {style}>{row['个人实际销量']:.3f}</p>", unsafe_allow_html=True)
@@ -137,4 +129,9 @@ if file:
                 r_cols[6].markdown(f"<p {style}>{row['RTP']:.3f}</p>", unsafe_allow_html=True)
 
         st.write("---")
-        csv = res.to_
+        # 导出 CSV 逻辑
+        csv_data = res.to_csv(index=False).encode('utf-8-sig')
+        st.download_button("📥 导出排序后的报告", csv_data, "ghost_report.csv", "text/csv")
+    
+    elif res is not None:
+        st.success("✅ 扫描完毕，未发现异常。")
